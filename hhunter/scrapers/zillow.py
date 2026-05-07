@@ -20,10 +20,9 @@ class ZillowScraper(PlaywrightScraper):
         url = self._build_search_url(params)
 
         with sync_playwright() as p:
-            browser, context = self._make_context(p)
-            page = context.new_page()
-
-            # Collect Zillow's own internal search API responses as they fire
+            # Collect Zillow's own internal search API responses as they fire.
+            # `captured` is passed into the retry helper so it can be cleared
+            # if the browser relaunches after a CAPTCHA.
             captured: list[dict] = []
 
             def _on_response(response):
@@ -33,13 +32,14 @@ class ZillowScraper(PlaywrightScraper):
                     except Exception:
                         pass
 
-            page.on("response", _on_response)
-
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                self._dismiss_overlays(page)
-                page.wait_for_load_state("networkidle", timeout=20_000)
-                self._delay(2, 4)
+                browser, context, page = self._open_page_with_captcha_retry(
+                    p, url,
+                    on_response=_on_response,
+                    captured=captured,
+                    site_name="Zillow",
+                )
+                self._delay(1, 2)
 
                 if captured:
                     return self._parse_api_data(captured[0])
@@ -50,7 +50,10 @@ class ZillowScraper(PlaywrightScraper):
             except Exception as e:
                 raise RuntimeError(f"Zillow search failed: {e}") from e
             finally:
-                browser.close()
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------
     # URL builder

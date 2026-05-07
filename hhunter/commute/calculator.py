@@ -5,7 +5,12 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 from urllib.parse import quote
 
+from rich.console import Console
+from rich.panel import Panel
+
 from models import Listing, SearchParams
+
+_console = Console()
 
 _STEALTH_JS = "Object.defineProperty(navigator, 'webdriver', {get: () => undefined, configurable: true});"
 
@@ -130,17 +135,35 @@ class _MapsSession:
     def __init__(self):
         from playwright.sync_api import sync_playwright
         self._pw = sync_playwright().__enter__()
+        headless = os.environ.get("HHUNTER_HEADED", "0") != "1"
+        self._browser, self._context = self._launch(headless)
+
+    def _launch(self, headless: bool):
         browser = self._pw.chromium.launch(
-            headless=True,
+            headless=headless,
             args=["--no-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"],
         )
-        self._context = browser.new_context(
+        context = browser.new_context(
             user_agent=_UA,
             viewport={"width": 1440, "height": 900},
             locale="en-US",
         )
-        self._context.add_init_script(_STEALTH_JS)
-        self._browser = browser
+        context.add_init_script(_STEALTH_JS)
+        return browser, context
+
+    def _relaunch_headed(self) -> None:
+        """Close the headless browser and reopen headed for CAPTCHA solving."""
+        _console.print(
+            Panel(
+                "[bold yellow]CAPTCHA detected on Google Maps.[/bold yellow]\n\n"
+                "hhunter is switching to a [bold]visible browser window[/bold].\n"
+                "The window will open in a moment…",
+                title="[bold red]🔒 Bot check[/bold red]",
+                border_style="yellow",
+            )
+        )
+        self._browser.close()
+        self._browser, self._context = self._launch(headless=False)
 
     def get_commute(
         self, origin: str, destination: str, am: bool = True
@@ -163,6 +186,15 @@ class _MapsSession:
                 except Exception:
                     pass
 
+            if self._is_captcha(page):
+                headless = os.environ.get("HHUNTER_HEADED", "0") != "1"
+                if headless:
+                    page.close()
+                    self._relaunch_headed()
+                    page = self._context.new_page()
+                    page.goto(url, wait_until="domcontentloaded", timeout=40_000)
+                self._handle_captcha(page)
+
             _set_departure_time(page, am)
             mins, dist = _read_route_info(page)
             return mins, dist
@@ -171,6 +203,38 @@ class _MapsSession:
         finally:
             page.close()
             time.sleep(random.uniform(1.5, 3))
+
+    def _is_captcha(self, page) -> bool:
+        try:
+            title = (page.title() or "").lower()
+            if any(s in title for s in ["captcha", "verify", "just a moment", "access denied"]):
+                return True
+            url = page.url.lower()
+            if any(s in url for s in ["captcha", "challenge", "/cdn-cgi/"]):
+                return True
+            body = page.inner_text("body")[:2_000].lower()
+            if any(s in body for s in ["verify you are human", "i'm not a robot", "checking your browser"]):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _handle_captcha(self, page) -> None:
+        _console.print(
+            Panel(
+                "[bold]A CAPTCHA appeared on Google Maps.[/bold]\n\n"
+                "  1. Solve it in the browser window\n"
+                "  2. Wait for the directions page to load\n"
+                "  3. Press [bold green]Enter[/bold green] here to continue",
+                title="[bold red]🔒 Google Maps CAPTCHA[/bold red]",
+                border_style="red",
+            )
+        )
+        input()
+        try:
+            page.wait_for_load_state("networkidle", timeout=30_000)
+        except Exception:
+            pass
 
     def close(self):
         self._browser.close()

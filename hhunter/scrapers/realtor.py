@@ -14,11 +14,9 @@ class RealtorScraper(PlaywrightScraper):
         url = self._build_search_url(params)
 
         with sync_playwright() as p:
-            browser, context = self._make_context(p)
-            page = context.new_page()
-
-            # Realtor.com fires a GraphQL-style search request as it loads.
-            # We intercept that instead of parsing the HTML.
+            # Intercept Realtor.com's internal GraphQL search call.
+            # `captured` is passed to the retry helper so it can be cleared
+            # if the browser relaunches after a CAPTCHA.
             captured: list[dict] = []
 
             def _on_response(response):
@@ -29,13 +27,14 @@ class RealtorScraper(PlaywrightScraper):
                     except Exception:
                         pass
 
-            page.on("response", _on_response)
-
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-                self._dismiss_overlays(page)
-                page.wait_for_load_state("networkidle", timeout=20_000)
-                self._delay(2, 4)
+                browser, context, page = self._open_page_with_captcha_retry(
+                    p, url,
+                    on_response=_on_response,
+                    captured=captured,
+                    site_name="Realtor.com",
+                )
+                self._delay(1, 2)
 
                 for data in captured:
                     listings = self._parse_api_data(data)
@@ -48,7 +47,10 @@ class RealtorScraper(PlaywrightScraper):
             except Exception as e:
                 raise RuntimeError(f"Realtor.com search failed: {e}") from e
             finally:
-                browser.close()
+                try:
+                    browser.close()
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------
     # URL builder
