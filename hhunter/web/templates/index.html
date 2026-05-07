@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>hhunter</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" />
+  <style>
+    body { background: #0f1117; color: #e0e0e0; }
+    .card { background: #1a1d27; border: 1px solid #2a2d3a; }
+    h1 { color: #4fc3f7; letter-spacing: -0.5px; }
+    .badge-low { background: #2e7d32; }
+    .badge-high { background: #b71c1c; }
+    .badge-market { background: #1565c0; }
+    .badge-unknown { background: #444; }
+    table { font-size: 0.85rem; }
+    th { color: #4fc3f7; border-color: #2a2d3a !important; }
+    td { border-color: #2a2d3a !important; vertical-align: middle; }
+    .commute-over { color: #ff5252; font-weight: 600; }
+    .spinner-border { width: 1.5rem; height: 1.5rem; }
+    .notable { font-size: 0.78rem; color: #aaa; max-width: 260px; }
+    #error-box { display: none; }
+    .source-badge { font-size: 0.7rem; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
+  </style>
+</head>
+<body>
+<div class="container-fluid py-4">
+  <div class="row mb-4">
+    <div class="col">
+      <h1>hhunter</h1>
+      <p class="text-muted">House listing aggregator — Zillow · Redfin · Realtor.com</p>
+    </div>
+  </div>
+
+  <div class="row">
+    <!-- Search Form -->
+    <div class="col-lg-3 mb-4">
+      <div class="card p-3">
+        <form id="search-form">
+          <h6 class="text-uppercase text-muted mb-3" style="font-size:0.7rem;letter-spacing:1px;">Location</h6>
+          <div class="mb-3">
+            <label class="form-label">Search area</label>
+            <input type="text" class="form-control bg-dark text-light border-secondary" name="location"
+              placeholder="Boston, MA or 02101" required />
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Employer address</label>
+            <input type="text" class="form-control bg-dark text-light border-secondary" name="employer_address"
+              placeholder="1 Main St, Boston, MA" required />
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Max commute (min, rush hour)</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" name="max_commute_minutes"
+              value="45" min="5" max="180" />
+          </div>
+
+          <h6 class="text-uppercase text-muted mb-3 mt-4" style="font-size:0.7rem;letter-spacing:1px;">Property</h6>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label">Min beds</label>
+              <input type="number" class="form-control bg-dark text-light border-secondary" name="min_beds" value="2" min="0" />
+            </div>
+            <div class="col-6">
+              <label class="form-label">Max beds</label>
+              <input type="number" class="form-control bg-dark text-light border-secondary" name="max_beds" placeholder="any" min="0" />
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Min baths</label>
+            <input type="number" class="form-control bg-dark text-light border-secondary" name="min_baths" value="1.5" min="0" step="0.5" />
+          </div>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label">Min sqft</label>
+              <input type="number" class="form-control bg-dark text-light border-secondary" name="min_sqft" placeholder="any" />
+            </div>
+            <div class="col-6">
+              <label class="form-label">Max sqft</label>
+              <input type="number" class="form-control bg-dark text-light border-secondary" name="max_sqft" placeholder="any" />
+            </div>
+          </div>
+
+          <h6 class="text-uppercase text-muted mb-3 mt-4" style="font-size:0.7rem;letter-spacing:1px;">Budget</h6>
+          <div class="row g-2 mb-3">
+            <div class="col-6">
+              <label class="form-label">Min price</label>
+              <input type="number" class="form-control bg-dark text-light border-secondary" name="min_price" placeholder="any" />
+            </div>
+            <div class="col-6">
+              <label class="form-label">Max price</label>
+              <input type="number" class="form-control bg-dark text-light border-secondary" name="max_price" placeholder="any" />
+            </div>
+          </div>
+
+          <h6 class="text-uppercase text-muted mb-3 mt-4" style="font-size:0.7rem;letter-spacing:1px;">Sources</h6>
+          <div class="mb-2">
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" name="sources" value="zillow" id="src-zillow" checked />
+              <label class="form-check-label" for="src-zillow">Zillow</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" name="sources" value="redfin" id="src-redfin" checked />
+              <label class="form-check-label" for="src-redfin">Redfin</label>
+            </div>
+            <div class="form-check form-check-inline">
+              <input class="form-check-input" type="checkbox" name="sources" value="realtor" id="src-realtor" checked />
+              <label class="form-check-label" for="src-realtor">Realtor</label>
+            </div>
+          </div>
+
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="ai-analysis" name="ai_analysis" />
+            <label class="form-check-label" for="ai-analysis">AI analysis (Claude)</label>
+          </div>
+
+          <button type="submit" class="btn btn-primary w-100" id="search-btn">
+            Search
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div class="col-lg-9">
+      <div id="error-box" class="alert alert-danger"></div>
+      <div id="results-header" class="d-flex justify-content-between align-items-center mb-2" style="display:none!important">
+        <span id="result-count" class="text-muted"></span>
+        <div>
+          <button class="btn btn-sm btn-outline-secondary me-2" id="export-csv">Export CSV</button>
+          <button class="btn btn-sm btn-outline-secondary" id="export-json">Export JSON</button>
+        </div>
+      </div>
+      <div id="loading" class="text-center py-5" style="display:none">
+        <div class="spinner-border text-primary" role="status"></div>
+        <p class="mt-3 text-muted">Searching listings and calculating commutes…</p>
+      </div>
+      <div class="card p-0" id="results-card" style="display:none">
+        <div class="table-responsive">
+          <table class="table table-dark table-hover mb-0" id="results-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Address</th>
+                <th>Price</th>
+                <th>Bd/Ba/Sqft</th>
+                <th>$/sqft</th>
+                <th>Price</th>
+                <th>AM</th>
+                <th>PM</th>
+                <th>DOM</th>
+                <th>Heating/Cooling</th>
+                <th>Notable</th>
+                <th>Link</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let lastResults = [];
+let maxCommute = 45;
+
+document.getElementById('search-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const btn = document.getElementById('search-btn');
+  const loading = document.getElementById('loading');
+  const card = document.getElementById('results-card');
+  const errBox = document.getElementById('error-box');
+  const header = document.getElementById('results-header');
+
+  errBox.style.display = 'none';
+  card.style.display = 'none';
+  header.style.display = 'none !important';
+  loading.style.display = 'block';
+  btn.disabled = true;
+  btn.textContent = 'Searching…';
+
+  const sources = [...form.querySelectorAll('input[name="sources"]:checked')].map(el => el.value);
+  maxCommute = parseInt(form.max_commute_minutes.value) || 45;
+
+  const body = {
+    location: form.location.value,
+    employer_address: form.employer_address.value,
+    max_commute_minutes: maxCommute,
+    min_beds: parseInt(form.min_beds.value) || 1,
+    max_beds: form.max_beds.value || null,
+    min_baths: parseFloat(form.min_baths.value) || 1,
+    min_sqft: form.min_sqft.value || null,
+    max_sqft: form.max_sqft.value || null,
+    min_price: form.min_price.value || null,
+    max_price: form.max_price.value || null,
+    property_types: ['Houses'],
+    sources: sources,
+    ai_analysis: form.ai_analysis.checked,
+  };
+
+  try {
+    const res = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    lastResults = data.listings;
+    renderResults(data.listings, data.errors);
+  } catch (err) {
+    errBox.textContent = 'Error: ' + err.message;
+    errBox.style.display = 'block';
+  } finally {
+    loading.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Search';
+  }
+});
+
+function renderResults(listings, errors) {
+  const tbody = document.getElementById('results-body');
+  const card = document.getElementById('results-card');
+  const header = document.getElementById('results-header');
+  const count = document.getElementById('result-count');
+
+  tbody.innerHTML = '';
+  count.textContent = `${listings.length} listings found`;
+  card.style.display = listings.length ? 'block' : 'none';
+  header.style.cssText = listings.length ? 'display:flex!important' : 'display:none!important';
+
+  if (errors && Object.keys(errors).length) {
+    const errBox = document.getElementById('error-box');
+    errBox.style.display = 'block';
+    errBox.textContent = 'Source errors: ' + Object.entries(errors).map(([k,v]) => `${k}: ${v}`).join(' | ');
+  }
+
+  listings.forEach(l => {
+    const tr = document.createElement('tr');
+    const pa = l.price_assessment || 'unknown';
+    const paBadge = `<span class="badge badge-${pa === 'at market' ? 'market' : pa}">${pa}</span>`;
+
+    const amOver = l.commute_minutes_am != null && l.commute_minutes_am > maxCommute;
+    const pmOver = l.commute_minutes_pm != null && l.commute_minutes_pm > maxCommute;
+    const amStr = l.commute_minutes_am != null ? `${l.commute_minutes_am}m` : '—';
+    const pmStr = l.commute_minutes_pm != null ? `${l.commute_minutes_pm}m` : '—';
+
+    tr.innerHTML = `
+      <td><span class="badge bg-secondary source-badge">${l.source}</span></td>
+      <td>${l.address}<br><small class="text-muted">${l.city}, ${l.state} ${l.zip_code}</small></td>
+      <td>${l.price ? '$' + l.price.toLocaleString() : '—'}</td>
+      <td>${l.beds ?? '?'}bd / ${l.baths ?? '?'}ba<br>${l.sqft ? l.sqft.toLocaleString() + ' sqft' : '—'}</td>
+      <td>${l.price_per_sqft ? '$' + Math.round(l.price_per_sqft) : '—'}</td>
+      <td>${paBadge}</td>
+      <td class="${amOver ? 'commute-over' : ''}">${amStr}</td>
+      <td class="${pmOver ? 'commute-over' : ''}">${pmStr}</td>
+      <td>${l.days_on_market ?? '—'}</td>
+      <td><small>${[l.heating, l.cooling].filter(Boolean).join(' / ') || '—'}</small></td>
+      <td class="notable">${l.notable_features ? l.notable_features.substring(0, 120) + (l.notable_features.length > 120 ? '…' : '') : '—'}</td>
+      <td><a href="${l.url}" target="_blank" class="btn btn-sm btn-outline-info py-0">View</a></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function doExport(fmt) {
+  if (!lastResults.length) return;
+  const res = await fetch(`/api/export/${fmt}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ listings: lastResults }),
+  });
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `listings.${fmt}`;
+  a.click();
+}
+
+document.getElementById('export-csv').addEventListener('click', () => doExport('csv'));
+document.getElementById('export-json').addEventListener('click', () => doExport('json'));
+</script>
+</body>
+</html>
