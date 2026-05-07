@@ -1,114 +1,142 @@
-import os
+import json
+import re
 from typing import List
+from urllib.parse import quote
 
-import requests
+from playwright.sync_api import sync_playwright
 
 from models import Listing, SearchParams
-from scrapers.base import BaseScraper
-
-# Uses RapidAPI "zillow56" — free tier: 50 req/month
-# Subscribe at https://rapidapi.com/apimaker/api/zillow56
-_API_HOST = "zillow56.p.rapidapi.com"
-_SEARCH_URL = f"https://{_API_HOST}/search"
-_DETAIL_URL = f"https://{_API_HOST}/property"
-
-_TYPE_MAP = {
-    "Houses": "Houses",
-    "Townhomes": "Townhomes",
-    "Condos": "Apartments_Condos_Co-ops",
-    "Manufactured": "Manufactured",
-}
+from scrapers.base_playwright import PlaywrightScraper
 
 
-class ZillowScraper(BaseScraper):
+class ZillowScraper(PlaywrightScraper):
     name = "zillow"
 
-    def __init__(self):
-        self.api_key = os.getenv("RAPIDAPI_KEY", "")
+    # -------------------------------------------------------------------
+    # Public
+    # -------------------------------------------------------------------
 
     def search(self, params: SearchParams) -> List[Listing]:
-        if not self.api_key:
-            raise RuntimeError(
-                "RAPIDAPI_KEY not set. Add it to .env to enable Zillow search."
-            )
+        url = self._build_search_url(params)
 
-        home_type = ",".join(
-            _TYPE_MAP.get(t, t) for t in params.property_types
-        )
+        with sync_playwright() as p:
+            browser, context = self._make_context(p)
+            page = context.new_page()
 
-        querystring: dict = {
-            "location": params.location,
-            "output": "json",
-            "home_type": home_type,
-            "beds_min": str(params.min_beds),
-            "baths_min": str(int(params.min_baths)),
-        }
-        if params.max_beds:
-            querystring["beds_max"] = str(params.max_beds)
-        if params.min_price:
-            querystring["price_min"] = str(params.min_price)
-        if params.max_price:
-            querystring["price_max"] = str(params.max_price)
+            # Collect Zillow's own internal search API responses as they fire
+            captured: list[dict] = []
+
+            def _on_response(response):
+                if "GetSearchPageState" in response.url:
+                    try:
+                        captured.append(response.json())
+                    except Exception:
+                        pass
+
+            page.on("response", _on_response)
+
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                self._dismiss_overlays(page)
+                page.wait_for_load_state("networkidle", timeout=20_000)
+                self._delay(2, 4)
+
+                if captured:
+                    return self._parse_api_data(captured[0])
+
+                # Fallback: extract from the __NEXT_DATA__ script tag
+                return self._parse_next_data(page)
+
+            except Exception as e:
+                raise RuntimeError(f"Zillow search failed: {e}") from e
+            finally:
+                browser.close()
+
+    # -------------------------------------------------------------------
+    # URL builder
+    # -------------------------------------------------------------------
+
+    def _build_search_url(self, params: SearchParams) -> str:
+        # Zillow URL format:
+        # /homes/for_sale/{location}_rb/{minprice}-{maxprice}_price/{beds}-_beds/{baths}-_baths/
+        loc = params.location.replace(", ", "-").replace(",", "-").replace(" ", "-")
+        parts = [f"https://www.zillow.com/homes/for_sale/{loc}_rb"]
+
+        if params.min_price and params.max_price:
+            parts.append(f"{params.min_price}-{params.max_price}_price")
+        elif params.max_price:
+            parts.append(f"1-{params.max_price}_price")
+
+        parts.append(f"{params.min_beds}-_beds")
+
+        if params.min_baths >= 1:
+            parts.append(f"{int(params.min_baths)}-_baths")
+
         if params.min_sqft:
-            querystring["sqft_min"] = str(params.min_sqft)
-        if params.max_sqft:
-            querystring["sqft_max"] = str(params.max_sqft)
+            parts.append(f"{params.min_sqft}-_sqft")
 
-        headers = {
-            "X-RapidAPI-Key": self.api_key,
-            "X-RapidAPI-Host": _API_HOST,
-        }
+        return "/".join(parts) + "/"
 
-        resp = requests.get(_SEARCH_URL, headers=headers, params=querystring, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+    # -------------------------------------------------------------------
+    # Parsers
+    # -------------------------------------------------------------------
 
-        results = data.get("results", [])
-        listings = []
-        for r in results:
-            listing = self._parse_result(r)
-            if listing:
-                listings.append(listing)
-        return listings
+    def _parse_api_data(self, data: dict) -> List[Listing]:
+        results = (
+            data.get("cat1", {})
+                .get("searchResults", {})
+                .get("listResults", [])
+        )
+        return [l for l in (self._parse_result(r) for r in results) if l]
+
+    def _parse_next_data(self, page) -> List[Listing]:
+        try:
+            raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+            data = json.loads(raw)
+            results = (
+                data.get("props", {})
+                    .get("pageProps", {})
+                    .get("searchPageState", {})
+                    .get("cat1", {})
+                    .get("searchResults", {})
+                    .get("listResults", [])
+            )
+        except Exception:
+            return []
+        return [l for l in (self._parse_result(r) for r in results) if l]
 
     def _parse_result(self, r: dict) -> Listing | None:
         try:
-            addr = r.get("address", {})
             zpid = str(r.get("zpid", ""))
-            url = r.get("detailUrl", "")
-            if not url.startswith("http"):
-                url = f"https://www.zillow.com{url}"
+            detail_url = r.get("detailUrl", "")
+            if detail_url and not detail_url.startswith("http"):
+                detail_url = f"https://www.zillow.com{detail_url}"
 
-            price = self._safe_float(r.get("price") or r.get("unformattedPrice"))
-            sqft = self._safe_int(r.get("livingArea"))
-            price_per_sqft = None
-            if price and sqft and sqft > 0:
-                price_per_sqft = round(price / sqft, 2)
+            raw_price = r.get("unformattedPrice") or r.get("price", 0)
+            if isinstance(raw_price, str):
+                raw_price = re.sub(r"[^\d.]", "", raw_price)
+            price = self._safe_float(raw_price)
 
-            lot_raw = r.get("lotAreaValue")
-            lot_unit = r.get("lotAreaUnit", "sqft")
-            lot_sqft = None
-            if lot_raw:
-                lot_sqft = self._safe_int(
-                    float(lot_raw) * 43560 if lot_unit == "acres" else lot_raw
-                )
+            sqft = self._safe_int(r.get("area") or r.get("livingArea"))
+            ppsf = round(price / sqft, 2) if (price and sqft) else None
+
+            hdp = r.get("hdpData", {}).get("homeInfo", {})
 
             return Listing(
                 source="zillow",
-                url=url,
+                url=detail_url,
                 listing_id=zpid,
-                address=addr.get("streetAddress", ""),
-                city=addr.get("city", ""),
-                state=addr.get("state", ""),
-                zip_code=addr.get("zipcode", ""),
+                address=r.get("addressStreet") or r.get("address", ""),
+                city=r.get("addressCity") or hdp.get("city", ""),
+                state=r.get("addressState") or hdp.get("state", ""),
+                zip_code=str(r.get("addressZipcode") or hdp.get("zipcode", "")),
                 price=price,
-                beds=self._safe_int(r.get("bedrooms")),
-                baths=self._safe_float(r.get("bathrooms")),
+                beds=self._safe_int(r.get("beds")),
+                baths=self._safe_float(r.get("baths")),
                 sqft=sqft,
-                lot_size_sqft=lot_sqft,
-                year_built=self._safe_int(r.get("yearBuilt")),
-                property_type=r.get("homeType"),
-                price_per_sqft=price_per_sqft,
+                year_built=self._safe_int(hdp.get("yearBuilt")),
+                property_type=r.get("homeType") or hdp.get("homeType"),
+                price_per_sqft=ppsf,
                 days_on_market=self._safe_int(r.get("daysOnZillow")),
                 description=r.get("description"),
                 image_urls=[r["imgSrc"]] if r.get("imgSrc") else [],
@@ -117,44 +145,62 @@ class ZillowScraper(BaseScraper):
         except Exception:
             return None
 
-    def get_details(self, zpid: str) -> dict:
-        """Fetch additional property details (heating, cooling, sewer, etc.)."""
-        if not self.api_key:
-            return {}
-        headers = {
-            "X-RapidAPI-Key": self.api_key,
-            "X-RapidAPI-Host": _API_HOST,
-        }
-        resp = requests.get(
-            _DETAIL_URL, headers=headers, params={"zpid": zpid}, timeout=30
-        )
-        if not resp.ok:
-            return {}
-        return resp.json()
+    # -------------------------------------------------------------------
+    # Detail page enrichment (heating, cooling, sewer, etc.)
+    # Navigates to each listing page — use sparingly to avoid rate limits.
+    # -------------------------------------------------------------------
 
-    def enrich_listing(self, listing: Listing) -> Listing:
-        """Pull full property details and populate systems fields."""
-        details = self.get_details(listing.listing_id)
-        if not details:
+    def enrich_listing(self, listing: Listing, context) -> Listing:
+        """Fetch the detail page for a single listing and populate systems fields."""
+        if not listing.url:
             return listing
+        page = context.new_page()
+        try:
+            page.goto(listing.url, wait_until="domcontentloaded", timeout=30_000)
+            self._delay(1.5, 3)
+            raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+            data = json.loads(raw)
 
-        facts = {}
-        for group in details.get("resoFacts", {}).get("atAGlanceFacts", []):
-            facts[group.get("factLabel", "").lower()] = group.get("factValue", "")
-
-        listing.heating = facts.get("heating")
-        listing.cooling = facts.get("cooling")
-        listing.sewer = facts.get("sewer")
-        listing.water = facts.get("water")
-        listing.parking = facts.get("parking")
-        listing.basement = facts.get("basement")
-
-        if not listing.description:
-            listing.description = details.get("description")
-
-        imgs = details.get("photos", [])
-        if imgs and not listing.image_urls:
-            listing.image_urls = [p.get("mixedSources", {}).get("jpeg", [{}])[0].get("url", "") for p in imgs[:5]]
-            listing.image_urls = [u for u in listing.image_urls if u]
-
+            # gdpClientCache is a JSON-encoded string nested inside __NEXT_DATA__
+            cache_raw = self._safe_get(
+                data, "props", "pageProps", "componentProps", "gdpClientCache"
+            )
+            if cache_raw:
+                cache = json.loads(cache_raw)
+                prop_key = next(iter(cache), None)
+                if prop_key:
+                    prop = cache[prop_key].get("property", {})
+                    reso = prop.get("resoFacts", {})
+                    listing.heating = _join(reso.get("heating"))
+                    listing.cooling = _join(reso.get("cooling"))
+                    listing.sewer = _join(reso.get("sewer"))
+                    listing.water = _join(reso.get("water"))
+                    listing.parking = _join(reso.get("parkingFeatures"))
+                    listing.basement = str(reso.get("hasBasement", ""))
+                    if not listing.description:
+                        listing.description = prop.get("description")
+        except Exception:
+            pass
+        finally:
+            page.close()
         return listing
+
+    def enrich_all(self, listings: List[Listing], max_enrich: int = 20) -> List[Listing]:
+        """Open one browser and enrich up to max_enrich listings with detail page data."""
+        with sync_playwright() as p:
+            browser, context = self._make_context(p)
+            try:
+                for listing in listings[:max_enrich]:
+                    self.enrich_listing(listing, context)
+                    self._delay(2, 4)
+            finally:
+                browser.close()
+        return listings
+
+
+def _join(val) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, list):
+        return ", ".join(str(v) for v in val if v)
+    return str(val)
